@@ -3,12 +3,20 @@ export interface Player {
   name: string;
   nickname?: string;
   role: 'handler' | 'cutter' | 'hybrid' | 'defender';
-  primaryAttributes: string[]; // e.g., ['elite_huck', 'high_stamina', 'tight_mark']
-  weaknesses: string[];       // e.g., ['soft_mark', 'turnover_prone']
+  primaryAttributes: string[];
+  weaknesses: string[];
   currentFatigue: 'Fresh' | 'Moderate' | 'Gassed';
   consecutivePoints: number;
-  recentForm: 'Hot' | 'Neutral' | 'Cold'; // Based on last 3 points
+  recentForm: 'Hot' | 'Neutral' | 'Cold';
   notes?: string;
+  // Legacy stats compatibility
+  stats?: {
+    goals?: number;
+    assists?: number;
+    blocks?: number;
+    turnovers?: number;
+    played?: number;
+  };
 }
 
 export interface PlayerStats {
@@ -23,15 +31,45 @@ export interface PlayerStats {
 
 export interface LineupMetrics {
   hasHistory: boolean;
-  successRate: string;      // Percentage or "N/A"
-  conversionRate: string;   // Percentage or "N/A"
-  turnoversPerPoint: string;// Number string or "N/A"
-  lineRating: string;       // Score string or "N/A"
+  successRate: string;
+  conversionRate: string;
+  turnoversPerPoint: string;
+  lineRating: string;
   mainStrength: string;
   mainWeakness: string;
 }
 
 export type PointStrategy = 'O-Line Hold' | 'D-Line Break' | 'Anti-Zone' | 'High Pressure';
+
+// Alias array exported for legacy index.tsx route compatibility
+export const STRATEGIES: PointStrategy[] = [
+  'O-Line Hold',
+  'D-Line Break',
+  'Anti-Zone',
+  'High Pressure',
+];
+
+/**
+ * Calculates individual player overall impact score.
+ * Fixes missing export for RosterTable and Player detail routes.
+ */
+export function playerScore(player: Partial<Player>): number {
+  if (!player) return 0;
+  
+  // Return baseline if no stats or points exist
+  const stats = player.stats;
+  if (!stats || !stats.played || stats.played === 0) {
+    return 50; // Baseline unrated score
+  }
+
+  const goals = stats.goals || 0;
+  const assists = stats.assists || 0;
+  const blocks = stats.blocks || 0;
+  const turnovers = stats.turnovers || 0;
+
+  const score = 50 + (goals * 3) + (assists * 2.5) + (blocks * 4) - (turnovers * 3);
+  return Math.min(100, Math.max(0, Math.round(score)));
+}
 
 /**
  * Calculates lineup performance metrics. 
@@ -39,9 +77,8 @@ export type PointStrategy = 'O-Line Hold' | 'D-Line Break' | 'Anti-Zone' | 'High
  */
 export function calculateLineupMetrics(
   players: Player[],
-  stats: PlayerStats
+  stats?: PlayerStats
 ): LineupMetrics {
-  // REQUIREMENT 1: If no points/games recorded in history, do NOT compute stats
   if (!stats || stats.pointsPlayed === 0) {
     return {
       hasHistory: false,
@@ -54,13 +91,10 @@ export function calculateLineupMetrics(
     };
   }
 
-  // Calculate dynamic stats when history exists
   const totalWins = stats.holds + stats.breaks;
   const successPct = Math.round((totalWins / stats.pointsPlayed) * 100);
   const conversionPct = Math.round((stats.holds / (stats.holds + stats.turnovers || 1)) * 100);
   const top = (stats.turnovers / stats.pointsPlayed).toFixed(1);
-  
-  // Custom formula for dynamic Line Rating based on point efficiency
   const baseRating = Math.min(100, Math.max(30, successPct + (stats.blocks * 3) - (stats.turnovers * 2)));
 
   return {
@@ -74,15 +108,18 @@ export function calculateLineupMetrics(
   };
 }
 
+// Alias export to support existing lineMetrics callers in routes
+export const lineMetrics = calculateLineupMetrics;
+
 /**
- * Dynamically derives lineup Strengths based on the current roster traits.
+ * Dynamically derives lineup Strengths based on active player traits.
  */
 export function deriveLineupStrengths(players: Player[]): string {
-  if (players.length === 0) return 'No players selected';
+  if (!players || players.length === 0) return 'No players selected';
 
   const attrCounts: Record<string, number> = {};
   players.forEach((p) => {
-    p.primaryAttributes.forEach((attr) => {
+    (p.primaryAttributes || []).forEach((attr) => {
       attrCounts[attr] = (attrCounts[attr] || 0) + 1;
     });
   });
@@ -98,11 +135,11 @@ export function deriveLineupStrengths(players: Player[]): string {
  * Dynamically derives lineup Weaknesses based on active player drawbacks.
  */
 export function deriveLineupWeaknesses(players: Player[]): string {
-  if (players.length === 0) return 'No players selected';
+  if (!players || players.length === 0) return 'No players selected';
 
   const weakCounts: Record<string, number> = {};
   players.forEach((p) => {
-    p.weaknesses.forEach((w) => {
+    (p.weaknesses || []).forEach((w) => {
       weakCounts[w] = (weakCounts[w] || 0) + 1;
     });
   });
@@ -115,41 +152,47 @@ export function deriveLineupWeaknesses(players: Player[]): string {
 }
 
 /**
- * REQUIREMENT 3: Regenerates or generates a recommended Set Lineup 
+ * Regenerates or generates a recommended Set Lineup 
  * matching the user's targeted point strategy and player conditions.
  */
 export function generateTacticalSet(
   availablePlayers: Player[],
   strategy: PointStrategy
 ): Player[] {
-  // Filter out gassed players first unless necessary
-  const eligible = availablePlayers.filter((p) => p.currentFatigue !== 'Gassed');
+  if (!availablePlayers) return [];
 
+  const eligible = availablePlayers.filter((p) => p.currentFatigue !== 'Gassed');
   let selected: Player[] = [];
 
   switch (strategy) {
     case 'O-Line Hold':
       selected = eligible
+        .slice()
         .sort((a, b) => (b.role === 'handler' ? 1 : -1))
         .slice(0, 7);
       break;
     case 'D-Line Break':
       selected = eligible
-        .sort((a, b) => (b.role === 'defender' || b.primaryAttributes.includes('tight_mark') ? 1 : -1))
+        .slice()
+        .sort((a, b) => (b.role === 'defender' || (b.primaryAttributes || []).includes('tight_mark') ? 1 : -1))
         .slice(0, 7);
       break;
     case 'Anti-Zone':
       selected = eligible
-        .filter((p) => p.primaryAttributes.includes('elite_huck') || p.role === 'hybrid')
+        .filter((p) => (p.primaryAttributes || []).includes('elite_huck') || p.role === 'hybrid')
         .slice(0, 7);
       break;
     case 'High Pressure':
     default:
       selected = eligible
-        .sort((a, b) => (a.consecutivePoints - b.consecutivePoints))
+        .slice()
+        .sort((a, b) => ((a.consecutivePoints || 0) - (b.consecutivePoints || 0)))
         .slice(0, 7);
       break;
   }
 
   return selected;
 }
+
+// Alias export to support existing buildLine callers in routes
+export const buildLine = generateTacticalSet;
